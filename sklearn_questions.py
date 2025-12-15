@@ -58,6 +58,7 @@ from sklearn.model_selection import BaseCrossValidator
 
 from sklearn.utils.validation import check_is_fitted
 from sklearn.utils.validation import validate_data
+from sklearn.utils.multiclass import check_classification_targets
 from sklearn.metrics.pairwise import pairwise_distances
 
 
@@ -82,6 +83,11 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
         self : instance of KNearestNeighbors
             The current instance of the classifier
         """
+        X, y = validate_data(self, X, y)
+        check_classification_targets(y)
+        self.X_train_ = X
+        self.y_train_ = y
+        self.classes_ = np.unique(y)
         return self
 
     def predict(self, X):
@@ -97,7 +103,23 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
         y : ndarray, shape (n_test_samples,)
             Predicted class labels for each test data sample.
         """
-        y_pred = np.zeros(X.shape[0])
+        check_is_fitted(self)
+        
+        X = validate_data(self, X, reset=False)
+        distances = pairwise_distances(X, self.X_train_)
+        neighbors_indices = np.argsort(
+            distances,
+            axis=1,
+        )[:, :self.n_neighbors]
+        neighbors_labels = self.y_train_[neighbors_indices]
+        y_pred = np.empty(X.shape[0], dtype=self.y_train_.dtype)
+        for i in range(X.shape[0]):
+            labels, counts = np.unique(
+                neighbors_labels[i],
+                return_counts=True
+            )
+            y_pred[i] = labels[np.argmax(counts)]
+            
         return y_pred
 
     def score(self, X, y):
@@ -115,7 +137,8 @@ class KNearestNeighbors(ClassifierMixin, BaseEstimator):
         score : float
             Accuracy of the model computed for the (X, y) pairs.
         """
-        return 0.
+        y_pred = self.predict(X)
+        return np.mean(y_pred == y)
 
 
 class MonthlySplit(BaseCrossValidator):
@@ -155,7 +178,28 @@ class MonthlySplit(BaseCrossValidator):
         n_splits : int
             The number of splits.
         """
-        return 0
+        if self.time_col == "index":
+            dates = X.index
+            try:
+                months = dates.to_period("M")
+            except AttributeError as exc:
+                raise ValueError(
+                    f"Column {self.time_col} is not datetime."
+                ) from exc
+        else:
+            if self.time_col not in X.columns:
+                return 0
+
+            dates = X[self.time_col]
+            try:
+                months = dates.dt.to_period("M")
+            except AttributeError as exc:
+                raise ValueError(
+                    f"Column {self.time_col} is not datetime."
+                ) from exc
+
+        n_unique_months = len(months.unique())
+        return max(0, n_unique_months - 1)
 
     def split(self, X, y, groups=None):
         """Generate indices to split data into training and test set.
@@ -178,11 +222,27 @@ class MonthlySplit(BaseCrossValidator):
             The testing set indices for that split.
         """
 
-        n_samples = X.shape[0]
+        if self.time_col == "index":
+            dates = X.index
+            if not isinstance(dates, pd.DatetimeIndex):
+                raise ValueError("Index is not datetime.")
+            months = dates.to_period("M")
+        else:
+            dates = X[self.time_col]
+            if not pd.api.types.is_datetime64_any_dtype(dates):
+                raise ValueError(
+                    f"Column {self.time_col} is not datetime."
+                )
+            months = dates.dt.to_period("M")
+
+        unique_months = np.sort(months.unique())
         n_splits = self.get_n_splits(X, y, groups)
+
         for i in range(n_splits):
-            idx_train = range(n_samples)
-            idx_test = range(n_samples)
-            yield (
-                idx_train, idx_test
-            )
+            train_month = unique_months[i]
+            test_month = unique_months[i + 1]
+
+            idx_train = np.flatnonzero(months == train_month)
+            idx_test = np.flatnonzero(months == test_month)
+
+            yield idx_train, idx_test
