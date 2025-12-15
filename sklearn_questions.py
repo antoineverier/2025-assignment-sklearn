@@ -221,7 +221,6 @@ class MonthlySplit(BaseCrossValidator):
         idx_test : ndarray
             The testing set indices for that split.
         """
-
         if self.time_col == "index":
             dates = X.index
             if not isinstance(dates, pd.DatetimeIndex):
